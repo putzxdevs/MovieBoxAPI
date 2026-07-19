@@ -1,8 +1,10 @@
 # MovieBoxAPI
 
-Unofficial Python client library for the **MovieBox** streaming platform.
+Unofficial Python client library for the **MovieBox** streaming platform and **SportsNow** live sports.
 
 MovieBox (powered by [aoneroom](https://aoneroom.com)) serves movies, TV series, and animations across multiple regions. This library wraps both the **H5 web API** (catalog/search/detail) and the **V3 mobile API** (signed streaming/subtitles) into a single, easy-to-use Python package.
+
+**SportsNow** (sportsnow.top) is a live sports streaming platform sharing the same aoneroom backend. The `SportsNowClient` provides direct API access — bypassing the ad-heavy web frontend — for live matches, scores, highlights, replays, and betting odds.
 
 > **⚠️ Disclaimer:** This is an unofficial, community-built library for educational and research purposes. It is not affiliated with, endorsed by, or connected to MovieBox or aoneroom in any way. Use at your own risk and respect the platform's Terms of Service.
 
@@ -20,6 +22,7 @@ MovieBox (powered by [aoneroom](https://aoneroom.com)) serves movies, TV series,
 - 📱 **Device fingerprint spoofing** — randomized Android device identities
 - 🔄 **Host-pool failover** — automatic failover across multiple API hosts
 - 🧦 **Proxy support** — SOCKS5/HTTP proxy for geo-blocked servers
+- ⚽ **SportsNow** — live sports matches, scores, highlights, replays, and betting odds
 
 ---
 
@@ -28,13 +31,15 @@ MovieBox (powered by [aoneroom](https://aoneroom.com)) serves movies, TV series,
 ```
 MovieBoxAPI/
 ├── src/movieboxapi/
-│   ├── __init__.py      # Public API exports
-│   ├── client.py        # MovieBoxClient — main entry point
-│   ├── constants.py     # API hosts, paths, region presets, device fingerprints
-│   ├── crypto.py        # HMAC-MD5 signing, client tokens
-│   ├── exceptions.py    # Custom exception hierarchy
-│   ├── models.py        # Dataclasses (MediaItem, StreamResult, etc.)
-│   └── utils.py         # Slug encoding, genre parsing, duration formatting
+│   ├── __init__.py           # Public API exports
+│   ├── client.py             # MovieBoxClient — main entry point
+│   ├── constants.py          # API hosts, paths, region presets, device fingerprints
+│   ├── crypto.py             # HMAC-MD5 signing, client tokens
+│   ├── exceptions.py         # Custom exception hierarchy
+│   ├── models.py             # Dataclasses (MediaItem, StreamResult, SportMatch, etc.)
+│   ├── sportsnow.py          # SportsNowClient — live sports API
+│   ├── sportsnow_constants.py # SportsNow API base URL, headers, sport types
+│   └── utils.py              # Slug encoding, genre parsing, duration formatting
 ├── examples/
 │   └── basic_usage.py   # Full usage demo
 ├── pyproject.toml       # Build config (hatchling)
@@ -42,14 +47,22 @@ MovieBoxAPI/
 └── README.md
 ```
 
-### Two API Layers
+### Two API Layers (MovieBox)
 
 | Layer | Host | Auth | Purpose |
 |-------|------|------|---------|
 | **H5 (web)** | `h5-api.aoneroom.com` | Bearer token from `x-user` header | Home, catalog, search, detail metadata |
 | **V3 (mobile)** | `api3-8.aoneroom.com` (+ SG variants) | HMAC-MD5 signed headers + Bearer | Streaming URLs, subtitles |
 
-The client automatically manages tokens for both layers. V3 requests are signed with HMAC-MD5 using a canonical string (method, URL, body hash, timestamp) and the host pool provides automatic failover.
+### SportsNow API
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/live/match-list` | Live & upcoming matches by sport/league |
+| `/live/match-detail` | Full match detail: odds, highlights, replays, streams |
+| `/live/tags` | Available leagues/tags for a sport |
+| `/news/sport/list` | Sports news articles |
+| `/live/activity/config` | Activity config & feature flags |
 
 ---
 
@@ -71,18 +84,18 @@ pip install -e .
 ## Quick Start
 
 ```python
-from movieboxapi import MovieBoxClient
-
-# Initialize client (region: ID=Indonesia, IN=India, US=United States)
-client = MovieBoxClient(region="ID")
-
-# Optional: SOCKS5 proxy for geo-blocked servers
-# client = MovieBoxClient(region="ID", proxy="socks5://127.0.0.1:40000")
+from movieboxapi import MovieBoxClient, SportsNowClient
 ```
+
+---
+
+## MovieBox — Movies & TV
 
 ### Homepage
 
 ```python
+client = MovieBoxClient(region="ID")
+
 sections = client.get_home()
 for section in sections:
     print(f"[{section.type}] {section.name}")
@@ -188,9 +201,129 @@ print(url)  # Direct .m3u8 URL
 
 ---
 
+## SportsNow — Live Sports
+
+The `SportsNowClient` provides direct API access to [sportsnow.top](https://sportsnow.top) — a live sports streaming platform sharing the same aoneroom backend infrastructure. No ads, no web scraping — clean API responses.
+
+**Supported sports:** football, basketball, tennis, cricket, volleyball, badminton, baseball, handball, rugby, table-tennis, and more.
+
+### Live & Upcoming Matches
+
+```python
+from movieboxapi import SportsNowClient
+
+client = SportsNowClient()
+
+# Get live/upcoming football matches
+for match in client.get_matches(sport_type="football"):
+    live = "🔴 LIVE" if match.is_live else ""
+    print(f"{match.team1_name} {match.team1_score} - {match.team2_score} {match.team2_name} {live}")
+    print(f"  League: {match.league}")
+    print(f"  Stream: {match.play_path[:80]}...")
+```
+
+### Match Detail with Odds
+
+```python
+# Get full match detail including odds, highlights, replays
+detail = client.get_match_detail("1418456361423229064", sport_type="football")
+
+print(f"{detail.team1_name} vs {detail.team2_name}")
+print(f"League: {detail.league} | Round: {detail.match_round}")
+print(f"Status: {detail.status}")
+
+# Betting odds from multiple providers
+for src in detail.odds_sources:
+    print(f"  {src.source}: Home={src.home}  Draw={src.draw}  Away={src.away}")
+
+# Highlight videos
+for url in detail.highlight_urls:
+    print(f"  Highlight: {url}")
+
+# Replay videos
+for url in detail.replay_urls:
+    print(f"  Replay: {url}")
+```
+
+### Convenience Methods
+
+```python
+# Get only the odds
+odds = client.get_match_odds("1418456361423229064")
+for o in odds:
+    print(f"{o.source}: H={o.home} D={o.draw} A={o.away}")
+
+# Get only highlight URLs
+highlights = client.get_highlight_urls("1418456361423229064")
+
+# Get only replay URLs
+replays = client.get_replay_urls("1418456361423229064")
+
+# Get raw API response (unparsed)
+raw = client.get_match_detail_raw("1418456361423229064")
+```
+
+### Filter by League
+
+```python
+from movieboxapi import SPORT_TYPES
+print(SPORT_TYPES)  # ['football', 'basketball', 'tennis', 'cricket', ...]
+
+# List leagues/tags for a sport
+tags = client.get_tags(sport_type="football")
+for tag in tags:
+    print(f"  {tag['name']} (id={tag['id']})")
+
+# Filter matches by league
+matches = client.get_matches(sport_type="football", tag_id="4186762757372631736")
+```
+
+### Sports News
+
+```python
+news = client.get_news(sport_type="football", page=1)
+for article in news:
+    print(f"  {article.title}")
+    print(f"    Views: {article.stat.view_count} | Likes: {article.stat.like_count}")
+```
+
+### Match Status
+
+```python
+from movieboxapi import MatchStatus
+
+for match in client.get_matches():
+    if match.status == MatchStatus.LIVING:
+        print(f"🔴 LIVE: {match.team1_name} vs {match.team2_name}")
+    elif match.status == MatchStatus.NOT_START:
+        print(f"⏰ Upcoming: {match.team1_name} vs {match.team2_name}")
+    elif match.status == MatchStatus.ENDED:
+        print(f"✅ Ended: {match.team1_name} {match.team1_score} - {match.team2_score} {match.team2_name}")
+```
+
+### Auto-paginate All Matches
+
+```python
+# Get all matches across all pages
+all_matches = client.get_all_matches(sport_type="football")
+print(f"Total matches: {len(all_matches)}")
+```
+
+### Raw API Access
+
+```python
+# Activity config (feature flags, supported countries, etc.)
+config = client.get_activity_config(sport_type="football")
+print(config)
+```
+
+---
+
 ## Models
 
 All models are `dataclasses` — no pydantic dependency. Convert to dict with `.to_dict()` or `dataclasses.asdict()`.
+
+### MovieBox Models
 
 | Model | Description |
 |-------|-------------|
@@ -206,6 +339,20 @@ All models are `dataclasses` — no pydantic dependency. Convert to dict with `.
 | `CastMember` | Cast/crew member (Director, Actor, Writer) |
 | `Dub` | Audio dub / subtitle variant (each has its own `subject_id`) |
 | `Trailer` | Trailer video info |
+
+### SportsNow Models
+
+| Model | Description |
+|-------|-------------|
+| `SportMatch` | Live/upcoming match (teams, score, stream, highlights) |
+| `SportMatchDetail` | Full match detail (odds, replays, league, 42 fields) |
+| `SportOddsSource` | Betting odds from a provider (home/draw/away) |
+| `SportOddsEntry` | Single odds entry (type + value) |
+| `SportTeam` | Team info (name, avatar, score, abbreviation) |
+| `SportPlaySource` | Streaming channel for a match |
+| `SportHighlight` | Highlight/replay video |
+| `SportNews` | Sports news article |
+| `SportActivityConfig` | Activity config & feature flags |
 
 ---
 
@@ -266,6 +413,7 @@ export MOVIEBOX_SECRET_KEY_ALT="your_alt_key_here"
 
 ```python
 client = MovieBoxClient(region="ID", timeout=30.0)
+client = SportsNowClient(timeout=30.0)
 ```
 
 ---
@@ -281,6 +429,8 @@ from movieboxapi import (
     signature,
     build_h5_headers,
     generate_v3_client_identity,
+    build_sportsnow_headers,
+    SPORTSNAW_API_BASE,
 )
 
 # Generate V3 device identity
@@ -299,6 +449,10 @@ ct = client_token()  # "<timestamp>,<md5(reverse(timestamp))>"
 
 # HMAC-MD5 signature
 sig = signature("GET", "application/json", "application/json", url)
+
+# SportsNow headers
+sn_headers = build_sportsnow_headers()
+print(SPORTSNAW_API_BASE)  # https://api2.aoneroom.com
 ```
 
 ---
@@ -320,6 +474,10 @@ Every V3 request is signed with HMAC-MD5:
 2. HMAC-MD5 the canonical string with the shared secret (base64-decoded)
 3. Encode the MAC as base64
 4. Header: `x-tr-signature: "<timestamp>|2|<base64_mac>"`
+
+### SportsNow Architecture
+
+SportsNow (sportsnow.top) shares the same aoneroom backend but has its own API prefix (`/wefeed-h5api-bff/live/`). The web frontend is ad-heavy and requires browser rendering. This library makes direct API calls with proper headers (Origin, User-Agent, cookie, JWT-like token) — no browser needed, no ads, clean data.
 
 ---
 
@@ -347,7 +505,7 @@ mypy src/
 
 ## Related Projects
 
-- [putzx-tv](https://github.com/Putzx/putzx-tv) — Web app that uses MovieBoxAPI for movie/TV streaming
+- [putzx-tv](https://github.com/putzxdevs/putzx-tv) — Web app that uses MovieBoxAPI for movie/TV streaming
 
 ## License
 
