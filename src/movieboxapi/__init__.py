@@ -25,6 +25,7 @@ from __future__ import annotations
 __version__ = "0.1.0"
 
 from .client import MovieBoxClient
+from .sportsnow import SportsNowClient
 from .constants import (
     FRONTENDS,
     H5_API_BASE,
@@ -55,16 +56,34 @@ from .models import (
     Quality,
     Season,
     SearchResult,
+    SportActivityConfig,
+    SportHighlight,
+    SportMatch,
+    SportMatchDetail,
+    SportNews,
+    SportNewsStats,
+    SportOddsEntry,
+    SportOddsSource,
+    SportPlaySource,
+    SportTeam,
+    SportTeamMatchInfo,
     StreamResult,
     Subtitle,
     Trailer,
 )
+from .sportsnow_constants import (
+    SPORT_TYPES,
+    SPORTSNAW_API_BASE,
+    MatchStatus,
+    build_sportsnow_headers,
+)
 from .utils import decode_slug, encode_slug
 
 __all__ = [
-    # Client
+    # Clients
     "MovieBoxClient",
-    # Models
+    "SportsNowClient",
+    # MovieBox Models
     "MediaItem",
     "MediaDetail",
     "CatalogPage",
@@ -78,6 +97,18 @@ __all__ = [
     "CastMember",
     "Dub",
     "Trailer",
+    # SportsNow Models
+    "SportMatch",
+    "SportMatchDetail",
+    "SportTeam",
+    "SportTeamMatchInfo",
+    "SportPlaySource",
+    "SportHighlight",
+    "SportNews",
+    "SportNewsStats",
+    "SportOddsEntry",
+    "SportOddsSource",
+    "SportActivityConfig",
     # Exceptions
     "MovieBoxError",
     "APIError",
@@ -85,13 +116,18 @@ __all__ = [
     "GeoBlockError",
     "StreamError",
     "TokenError",
-    # Constants
+    # MovieBox Constants
     "FRONTENDS",
     "H5_API_BASE",
     "H5_HOST",
     "V3_HOST_POOL",
     "REGION_PRESETS",
     "TabID",
+    # SportsNow Constants
+    "SPORTSNAW_API_BASE",
+    "SPORT_TYPES",
+    "MatchStatus",
+    "build_sportsnow_headers",
     # Crypto
     "build_h5_headers",
     "generate_v3_client_identity",
