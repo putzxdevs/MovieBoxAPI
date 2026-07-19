@@ -38,10 +38,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/putzxdevs/MovieBoxAPI-Python"
-Repository = "https://github.com/putzxdevs/MovieBoxAPI-Python"
-Issues = "https://github.com/putzxdevs/MovieBoxAPI-Python/issues"
-Documentation = "https://github.com/putzxdevs/MovieBoxAPI-Python#readme"
+Homepage = "https://github.com/putzxdevs/MovieBoxAPI"
+Repository = "https://github.com/putzxdevs/MovieBoxAPI"
+Issues = "https://github.com/putzxdevs/MovieBoxAPI/issues"
+Documentation = "https://github.com/putzxdevs/MovieBoxAPI#readme"
 
 [project.optional-dependencies]
 dev = [

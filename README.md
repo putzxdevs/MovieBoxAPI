@@ -62,8 +62,8 @@ pip install movieboxapi
 Or install from source:
 
 ```bash
-git clone https://github.com/putzxdevs/MovieBoxAPI-Python.git
-cd MovieBoxAPI-Python
+git clone https://github.com/putzxdevs/MovieBoxAPI.git
+cd MovieBoxAPI
 pip install -e .
 ```
 
@@ -333,8 +333,8 @@ Every V3 request is signed with HMAC-MD5:
 
 ```bash
 # Clone
-git clone https://github.com/putzxdevs/MovieBoxAPI-Python.git
-cd MovieBoxAPI-Python
+git clone https://github.com/putzxdevs/MovieBoxAPI.git
+cd MovieBoxAPI
 
 # Install in dev mode
 pip install -e ".[dev]"
