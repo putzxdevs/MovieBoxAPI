@@ -56,12 +56,6 @@ The client automatically manages tokens for both layers. V3 requests are signed 
 ## Installation
 
 ```bash
-pip install movieboxapi
-```
-
-Or install from source:
-
-```bash
 git clone https://github.com/putzxdevs/MovieBoxAPI.git
 cd MovieBoxAPI
 pip install -e .
