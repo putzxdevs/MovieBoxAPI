@@ -37,6 +37,7 @@ Usage::
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -52,6 +53,7 @@ from .constants import (
     V3_CAPTIONS_PATH,
     V3_HOST_POOL,
     V3_MAIN_PAGE_PATH,
+    V3_PLAY_INFO_PATH,
     V3_RESOURCE_PATH,
     V3_RETRY_CODES,
     build_h5_headers,
@@ -114,6 +116,35 @@ RES_LABELS: dict[int, str] = {
     1440: "1440p",
     2160: "4K",
 }
+
+
+def _parse_dash_manifest_url(sign_cookie: str) -> Optional[str]:
+    """Extract authorized DASH manifest URL from CloudFront-Policy in signCookie."""
+    if not sign_cookie or "CloudFront-Policy=" not in sign_cookie:
+        return None
+    try:
+        parts = dict(p.strip().split("=", 1) for p in sign_cookie.split(";") if "=" in p)
+        policy_raw = parts.get("CloudFront-Policy")
+        if not policy_raw:
+            return None
+        standard_b64 = (
+            policy_raw.replace("-", "+")
+            .replace("_", "=")
+            .replace("~", "/")
+        )
+        padding = 4 - len(standard_b64) % 4
+        if padding != 4:
+            standard_b64 += "=" * padding
+        policy_json = json.loads(base64.b64decode(standard_b64.encode("utf-8")).decode("utf-8"))
+        statements = policy_json.get("Statement") or []
+        if not statements or not isinstance(statements, list):
+            return None
+        resource = statements[0].get("Resource") or ""
+        if resource.endswith("/*"):
+            return resource[:-1] + "index_web.mpd"
+    except Exception as exc:
+        logger.debug("Failed to parse CloudFront policy: %s", exc)
+    return None
 
 
 class MovieBoxClient:
@@ -725,11 +756,102 @@ class MovieBoxClient:
         -------
         StreamResult
             Contains ``url``, ``subtitle_url``, ``resource_id``,
-            ``qualities``, and ``subtitles``.
+            ``qualities``, ``subtitles``, ``sign_cookie``, and ``headers``.
         """
         if not subject_id:
             raise StreamError("subject_id is required")
 
+        # 1. Try V3 play-info (first-party streaming endpoint in v4.0+)
+        play_info_params = {"subjectId": subject_id, "se": se, "ep": ep}
+        if lan:
+            play_info_params["lan"] = lan
+
+        play_info_data = self._v3_request(
+            V3_PLAY_INFO_PATH, params=play_info_params, include_play_mode=True
+        )
+
+        # For movies or if se/ep return empty streams, try se=0, ep=0
+        if not play_info_data or not (isinstance(play_info_data, dict) and play_info_data.get("streams")):
+            if se <= 1 and ep <= 1:
+                alt_params = {"subjectId": subject_id, "se": 0, "ep": 0}
+                if lan:
+                    alt_params["lan"] = lan
+                play_info_data = self._v3_request(
+                    V3_PLAY_INFO_PATH, params=alt_params, include_play_mode=True
+                )
+
+        if isinstance(play_info_data, dict) and play_info_data.get("streams"):
+            streams = play_info_data.get("streams") or []
+            target_stream = None
+            for s in streams:
+                if s.get("signCookie"):
+                    target_stream = s
+                    break
+            if target_stream is None and streams:
+                target_stream = streams[0]
+
+            if target_stream:
+                sign_cookie = target_stream.get("signCookie") or ""
+                manifest_url = _parse_dash_manifest_url(sign_cookie)
+                video_url = manifest_url or target_stream.get("url") or ""
+
+                if video_url and "macdn.aoneroom.com" not in video_url:
+                    resource_id = str(target_stream.get("id") or "")
+
+                    qualities: list[Quality] = []
+                    raw_res = target_stream.get("resolutions") or ""
+                    if raw_res:
+                        for r_str in str(raw_res).split(","):
+                            try:
+                                r_val = int(r_str.strip())
+                                qualities.append(
+                                    Quality(
+                                        resolution=r_val,
+                                        label=RES_LABELS.get(r_val, f"{r_val}p"),
+                                        current=(r_val == resolution),
+                                    )
+                                )
+                            except ValueError:
+                                pass
+                        qualities.sort(key=lambda q: q.resolution)
+
+                    dedicated_captions = self._fetch_captions(subject_id, resource_id)
+                    seen_langs: set[str] = set()
+                    subtitles: list[Subtitle] = []
+                    for cap in dedicated_captions:
+                        lc = (cap.get("lan") or cap.get("language") or "").lower()
+                        url = cap.get("url") or ""
+                        if lc and url and lc not in seen_langs:
+                            seen_langs.add(lc)
+                            subtitles.append(
+                                Subtitle(
+                                    lang=lc,
+                                    label=LANG_LABELS.get(lc, lc.upper()),
+                                    url=url,
+                                )
+                            )
+
+                    subtitle_url = self._find_preferred_subtitle(
+                        dedicated_captions, subject_id, resource_id
+                    )
+                    if not subtitle_url and subtitles:
+                        subtitle_url = subtitles[0].url
+
+                    req_headers = {}
+                    if sign_cookie:
+                        req_headers["Cookie"] = sign_cookie
+
+                    return StreamResult(
+                        url=video_url,
+                        subtitle_url=subtitle_url or "",
+                        resource_id=resource_id,
+                        qualities=qualities,
+                        subtitles=subtitles,
+                        sign_cookie=sign_cookie,
+                        headers=req_headers,
+                    )
+
+        # 2. Fallback to V3 resource endpoint
         params: dict[str, Any] = {
             "subjectId": subject_id,
             "resolution": resolution,
@@ -765,7 +887,7 @@ class MovieBoxClient:
         if not items:
             raise StreamError(f"No stream items for subject_id={subject_id}")
 
-        # Find target episode
+        # Find target episode, filtering out placeholder links if sourceUrl exists
         target = None
         for item in items:
             if (se, ep) == (item.get("se", 0), item.get("ep", 0)):
@@ -774,7 +896,13 @@ class MovieBoxClient:
         if target is None:
             target = max(items, key=lambda x: x.get("resolution", 0))
 
-        video_url = str(target.get("resourceLink") or target.get("sourceUrl") or "")
+        raw_link = str(target.get("resourceLink") or "")
+        source_url = str(target.get("sourceUrl") or "")
+        if "macdn.aoneroom.com" in raw_link and source_url:
+            video_url = source_url
+        else:
+            video_url = raw_link or source_url
+
         resource_id = str(target.get("resourceId") or "")
         if not video_url:
             raise StreamError("Stream URL is empty in API response")
