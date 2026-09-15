@@ -138,6 +138,8 @@ class StreamResult:
     resource_id: str = ""
     qualities: list[Quality] = field(default_factory=list)
     subtitles: list[Subtitle] = field(default_factory=list)
+    sign_cookie: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
