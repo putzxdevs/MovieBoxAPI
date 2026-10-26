@@ -1,40 +1,3 @@
-"""
-MovieBoxAPI client — sync HTTP client for the MovieBox streaming platform.
-
-Two API layers:
-
-  **H5 API** (``h5-api.aoneroom.com``)
-    Web-facing BFF — home page, catalog browsing, search, detail metadata.
-    Authenticated via a bearer token obtained from the home endpoint.
-
-  **V3 Mobile API** (``api*.aoneroom.com``)
-    Android-app API — signed (HMAC-MD5) requests for streaming URLs and
-    subtitles.  Host-pool failover: if one host returns 4xx/5xx the client
-    automatically tries the next.
-
-Usage::
-
-    from movieboxapi import MovieBoxClient
-
-    client = MovieBoxClient(region="ID")
-
-    # Home page
-    home = client.get_home()
-
-    # Browse movies
-    movies = client.get_movies(page=1)
-
-    # Search
-    results = client.search("avengers")
-
-    # Detail
-    detail = client.get_detail("/id/movie/some-slug")
-
-    # Stream
-    stream = client.get_stream(subject_id="12345", se=1, ep=1)
-    print(stream.url)
-"""
-
 from __future__ import annotations
 
 import base64
@@ -729,6 +692,111 @@ class MovieBoxClient:
 
     # ── Public: Streaming ─────────────────────────────────────────────────────
 
+    # ── H5 web play (walterwhite-69 v2.0.0, Okt 2026) ──────────────────────
+    # /wefeed-h5api-bff/subject/play → MP4 asli (bcdnxw) + DASH (sbcdnw).
+    # Dipanggil duluan oleh get_stream(); return None kalau hasResource=false.
+
+    H5_PLAY_DOMAINS: list[str] = [
+        "https://movieboxhd.net",
+        "https://h5-api.aoneroom.com",
+        "https://movie-box.co",
+        "https://movieboxonline.net",
+        "https://123moviesfree.club",
+        "https://sflix.film",
+        "https://netnaija.film",
+    ]
+
+    def _h5_play(
+        self, subject_id: str, se: int = 0, ep: int = 0,
+        resolution: int = 1080, detail_path: str = "",
+    ) -> Optional[dict]:
+        """H5 web play endpoint. Return dict(url, dash, all, has_resource) atau None."""
+        try:
+            if not detail_path:
+                # detailPath needed by H5 play; resolve via V3 /subject-api/get.
+                try:
+                    from .constants import V3_SUBJECT_GET_PATH
+                    g = self._v3_request(V3_SUBJECT_GET_PATH,
+                                         params={"subjectId": subject_id})
+                    gd = (g.get("data") or g) if isinstance(g, dict) else {}
+                    subj = gd.get("subject", gd) if isinstance(gd, dict) else {}
+                    # detailPath H5 = basename dari detailUrl V3 (WAJIB pas, kalau salah WAF 400).
+                    durl = (gd.get("detailUrl") or subj.get("detailUrl") or "") if isinstance(gd, dict) else ""
+                    detail_path = durl.rsplit("/", 1)[-1] if durl else ""
+                    if not detail_path and isinstance(subj, dict):
+                        detail_path = (subj.get("detailPath") or subj.get("detail_path")
+                                       or gd.get("detailPath") or "")
+                except Exception:
+                    detail_path = ""
+            try:
+                h5_token = self._get_bearer_token()
+            except Exception:
+                h5_token = ""
+            import httpx as _httpx
+            dp = detail_path or ""
+            for domain in self.H5_PLAY_DOMAINS:
+                try:
+                    play_url = (
+                        f"{domain}/wefeed-h5api-bff/subject/play?"
+                        f"subjectId={subject_id}&se={se}&ep={ep}&detailPath={dp}&"
+                        "streamSignType=1&supportCodecs%5Bhevc%5D=1&supportCodecs%5Bh264%5D=1"
+                    )
+                    headers = {
+                        "User-Agent": ("Mozilla/5.0 (Linux; Android 15; Pixel 9) "
+                                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                       "Chrome/154.0.0.0 Mobile Safari/537.36"),
+                        "Referer": (f"{domain}/movies/{dp}?id={subject_id}&type=/movie/detail"
+                                    f"&detailSe=&detailEp=&lang=en"),
+                        "Accept": "application/json",
+                        "x-client-info": '{"timezone":"Asia/Calcutta"}',
+                        "x-request-lang": "en",
+                        "x-vip-restrict": "0",
+                        "x-no-high-risk-restrict": "0",
+                        "x-source": "moviebox",
+                    }
+                    if h5_token:
+                        headers["Authorization"] = f"Bearer {h5_token}"
+                    # H5 WAF nolak fingerprint TLS httpx (400 PARAMS_ERROR palsu).
+                    # Pakai curl_cffi impersonate chrome (kayak APK/web) bila tersedia.
+                    try:
+                        from curl_cffi import requests as _cr
+                        _sess = _cr.Session(impersonate="chrome120")
+                        r = _sess.get(play_url, headers=headers, timeout=20)
+                        r_status, r_json = r.status_code, r.json
+                    except ImportError:
+                        with _httpx.Client(timeout=20, follow_redirects=True) as c:
+                            r = c.get(play_url, headers=headers)
+                        r_status, r_json = r.status_code, r.json
+                    if r_status != 200:
+                        continue
+                    data = (r_json().get("data") or {})
+                    streams = data.get("streams") or []
+                    if not streams:
+                        continue
+                    streams.sort(key=lambda s: int(s.get("size") or 0), reverse=True)
+                    picked = None
+                    for s in streams:
+                        try:
+                            q = int(str(s.get("resolutions", "0")).split(",")[0])
+                        except Exception:
+                            q = 0
+                        if q <= resolution:
+                            picked = s
+                            break
+                    if not picked:
+                        picked = streams[0]
+                    return {
+                        "url": picked.get("url") or "",
+                        "dash": data.get("dash") or [],
+                        "all": streams,
+                        "has_resource": data.get("hasResource", True),
+                    }
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
     def get_stream(
         self,
         subject_id: str,
@@ -736,6 +804,7 @@ class MovieBoxClient:
         ep: int = 1,
         resolution: int = 1080,
         lan: Optional[str] = None,
+        detail_path: str = "",
     ) -> StreamResult:
         """Get a playable stream URL with qualities and subtitles.
 
@@ -760,6 +829,81 @@ class MovieBoxClient:
         """
         if not subject_id:
             raise StreamError("subject_id is required")
+
+        # 0. Try H5 web play FIRST (MP4 asli bcdnxw + DASH sbcdnw).
+        #    V3 mobile sering cuma ngasih placeholder/iklan buat judul tertentu.
+        #    NOTE: se/ep ASLI dulu — sebagian judul (mis. TV/movie tertentu)
+        #    nolak se=0/ep=0 tapi OK dengan se=1/ep=1. 0/0 cuma fallback.
+        try:
+            kind = "movie" if (se <= 1 and ep <= 1) else "tv"
+            h5 = self._h5_play(subject_id, se=se, ep=ep, resolution=resolution,
+                               detail_path=detail_path or "")
+            if not (h5 and h5.get("url")) and kind == "movie" and (se != 0 or ep != 0):
+                h5 = self._h5_play(subject_id, se=0, ep=0, resolution=resolution,
+                                   detail_path=detail_path or "")
+        except Exception:
+            h5 = None
+        if h5 and h5.get("url"):
+            h5_url = str(h5["url"])
+            h5_all = h5.get("all") or []
+            qualities: list[Quality] = []
+            seen_q: set[int] = set()
+            for s in h5_all:
+                try:
+                    qv = int(str(s.get("resolutions", "0")).split(",")[0])
+                except Exception:
+                    continue
+                if qv and qv not in seen_q:
+                    seen_q.add(qv)
+                    qualities.append(Quality(resolution=qv, label=RES_LABELS.get(qv, f"{qv}p"),
+                                             current=(qv == resolution)))
+            qualities.sort(key=lambda q: q.resolution)
+            dash = h5.get("dash") or []
+            sign_cookie = str((dash[0].get("signCookie") or "") if dash else "")
+            req_headers = {"User-Agent": ("Mozilla/5.0 (Linux; Android 15; Pixel 9) "
+                                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                          "Chrome/154.0.0.0 Mobile Safari/537.36"),
+                           "Referer": "https://movieboxhd.net/",
+                           "Origin": "https://movieboxhd.net"}
+            if sign_cookie:
+                req_headers["Cookie"] = sign_cookie
+            # subtitle tetap via V3 captions — curi resourceId dari play-info V3
+            # (videonya tidak dipakai, cuma ID-nya buat subtitle).
+            try:
+                _rid = ""
+                try:
+                    _pi = self._v3_request(
+                        V3_PLAY_INFO_PATH,
+                        params={"subjectId": subject_id, "se": se, "ep": ep},
+                        include_play_mode=True,
+                    )
+                    _st = ((_pi.get("streams") or []) if isinstance(_pi, dict) else [])
+                    if _st:
+                        _rid = str(_st[0].get("id") or "")
+                except Exception:
+                    _rid = ""
+                resource_id = _rid
+                dedicated_captions = self._fetch_captions(subject_id, resource_id) if _rid else []
+            except Exception:
+                dedicated_captions = []
+            seen_langs: set[str] = set()
+            subtitles: list[Subtitle] = []
+            for cap in dedicated_captions:
+                lc = (cap.get("lan") or cap.get("language") or "").lower()
+                url = cap.get("url") or ""
+                if lc and url and lc not in seen_langs:
+                    seen_langs.add(lc)
+                    subtitles.append(Subtitle(lang=lc, label=LANG_LABELS.get(lc, lc.upper()), url=url))
+            logger.info("H5 play hit subject_id=%s url=%s", subject_id, h5_url[:80])
+            return StreamResult(
+                url=h5_url,
+                subtitle_url=subtitles[0].url if subtitles else "",
+                resource_id="",
+                qualities=qualities,
+                subtitles=subtitles,
+                sign_cookie=sign_cookie,
+                headers=req_headers,
+            )
 
         # 1. Try V3 play-info (first-party streaming endpoint in v4.0+)
         play_info_params = {"subjectId": subject_id, "se": se, "ep": ep}
